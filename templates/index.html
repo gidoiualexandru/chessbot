@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Chess Bot Interface</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css"
+    />
+    <style>
+      .board {
+        width: 400px;
+        margin: 20px auto;
+      }
+      .game-info {
+        text-align: center;
+        margin: 20px;
+      }
+      .controls {
+        text-align: center;
+        margin: 20px;
+      }
+      #status {
+        font-weight: bold;
+        margin: 10px;
+      }
+      .highlight-white {
+        box-shadow: inset 0 0 3px 3px yellow;
+      }
+      .highlight-black {
+        box-shadow: inset 0 0 3px 3px blue;
+      }
+      /* Highlight for selected piece */
+      .highlight-selected {
+        box-shadow: inset 0 0 3px 3px red;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="game-info">
+      <h1>Chess Bot Interface</h1>
+      <div id="status">Start a new game!</div>
+    </div>
+    <div class="board" id="board"></div>
+    <div class="controls">
+      <button id="newGameBtn">New Game</button>
+      <button id="undoBtn">Undo Move</button>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <script>
+      let board = null;
+      let game = new Chess();
+      let gameId = null;
+      let $board = $("#board");
+      let selectedSquare = null;
+
+      function removeHighlights() {
+        $board.find(".square-55d63").removeClass("highlight-white");
+        $board.find(".square-55d63").removeClass("highlight-black");
+        $board.find(".square-55d63").removeClass("highlight-selected");
+      }
+
+      function highlightLegalMoves(square) {
+        removeHighlights();
+
+        if (square === null) return;
+
+        $board.find(".square-" + square).addClass("highlight-selected");
+
+        let moves = game.moves({
+          square: square,
+          verbose: true,
+        });
+
+        moves.forEach((move) => {
+          if (move.flags.includes("c")) {
+            $board.find(".square-" + move.to).addClass("highlight-black");
+          } else {
+            $board.find(".square-" + move.to).addClass("highlight-white");
+          }
+        });
+      }
+
+      function onDragStart(source, piece, position, orientation) {
+        if (game.game_over()) return false;
+
+        if (piece.search(/^b/) !== -1) return false;
+
+        selectedSquare = source;
+        highlightLegalMoves(source);
+        return true;
+      }
+
+      function makeMove(source, target) {
+        const move = {
+          from: source,
+          to: target,
+          promotion: "q",
+        };
+
+        let legalMove = game.move(move);
+
+        if (legalMove === null) return false;
+
+        fetch("/make_move", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            game_id: gameId,
+            move: legalMove.san,
+          }),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.error) {
+              game.undo();
+              board.position(game.fen());
+              $("#status").text("Invalid move!");
+              return;
+            }
+
+            game.load(data.fen);
+            board.position(data.fen);
+
+            if (data.game_over) {
+              $("#status").text(data.result);
+            } else {
+              $("#status").text("Your turn");
+            }
+          })
+          .catch((error) => {
+            console.error("Error:", error);
+            $("#status").text("Error occurred. Please try again.");
+            game.undo();
+            board.position(game.fen());
+          });
+
+        return true;
+      }
+
+      function onDrop(source, target) {
+        removeHighlights();
+        selectedSquare = null;
+
+        if (!makeMove(source, target)) {
+          return "snapback";
+        }
+      }
+
+      function onSnapEnd() {
+        board.position(game.fen());
+      }
+
+      function onSquareClick(square) {
+        let piece = game.get(square);
+
+        if (selectedSquare !== null) {
+          if (makeMove(selectedSquare, square)) {
+            selectedSquare = null;
+            removeHighlights();
+            return;
+          }
+
+          if (square === selectedSquare) {
+            selectedSquare = null;
+            removeHighlights();
+            return;
+          }
+
+          if (piece && piece.color === "w") {
+            selectedSquare = square;
+            highlightLegalMoves(square);
+            return;
+          }
+        }
+
+        if (piece && piece.color === "w") {
+          selectedSquare = square;
+          highlightLegalMoves(square);
+        }
+      }
+
+      function newGame() {
+        removeHighlights();
+        selectedSquare = null;
+
+        fetch("/new_game", {
+          method: "POST",
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            gameId = data.game_id;
+            game = new Chess();
+            board.position("start");
+            $("#status").text("Your turn");
+          })
+          .catch((error) => {
+            console.error("Error:", error);
+            $("#status").text("Error starting new game. Please try again.");
+          });
+      }
+
+      board = Chessboard("board", {
+        draggable: true,
+        position: "start",
+        onDragStart: onDragStart,
+        onDrop: onDrop,
+        onSnapEnd: onSnapEnd,
+        onSquareClick: onSquareClick,
+        pieceTheme: "/static/img/chesspieces/{piece}.png",
+      });
+
+      $("#newGameBtn").on("click", newGame);
+      $("#undoBtn").on("click", function () {
+        removeHighlights();
+        selectedSquare = null;
+        game.undo();
+        game.undo();
+        board.position(game.fen());
+      });
+
+      $(window).resize(board.resize);
+
+      newGame();
+    </script>
+  </body>
+</html>
